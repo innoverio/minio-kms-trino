@@ -1,0 +1,104 @@
+version: '3.7'
+services:
+  trino-coordinator:
+    image: 'trinodb/trino:latest'
+    hostname: trino-coordinator
+    ports:
+      - '8080:8080'
+      - '8443:8443'
+    volumes:
+      - ./etc:/etc/trino
+      - ./certs:/etc/trino/certs
+      - ./client_certs/:/etc/trino/client_certs
+    networks:
+      - trino-network
+
+  mariadb:
+    image: 'mariadb:latest'
+    hostname: mariadb
+    ports:
+      - '3306:3306'
+    environment:
+      MYSQL_ROOT_PASSWORD: admin
+      MYSQL_USER: admin
+      MYSQL_PASSWORD: admin
+      MYSQL_DATABASE: metastore_db
+    networks:
+      - trino-network
+
+  hive-metastore:
+    image: 'michieldesmet/hive-metastore:latest'
+    hostname: hive-metastore
+    ports:
+      - '9083:9083' # Metastore Thrift
+    volumes:
+      - ./conf/metastore-site.xml:/opt/apache-hive-metastore-3.0.0-bin/conf/metastore-site.xml:ro
+      - ./certs:/root/.minio/certs
+    environment:
+      METASTORE_DB_HOSTNAME: mariadb
+      HADOOP_CLIENT_OPTS: "-Dcom.amazonaws.sdk.disableCertChecking=true"
+      METASTORE_OPTS: "-Dcom.amazonaws.sdk.disableCertChecking=true"
+    depends_on:
+      - mariadb
+    networks:
+      - trino-network
+
+  minio-setup:
+    image: minio/mc
+    container_name: minio-setup
+    environment:
+        - MC_HOST_lakefs=https://minio:minio123@minio:9000
+    depends_on:
+      - minio
+    volumes:
+      - ./certs:/root/.minio/certs
+    command: mb --insecure lakefs/example
+    networks:
+      - trino-network
+
+  minio:
+    image: 'minio/minio:latest'
+    hostname: minio
+    container_name: minio
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - ./certs:/root/.minio/certs
+    environment:
+      MINIO_ACCESS_KEY: minio
+      MINIO_SECRET_KEY: minio123
+      MINIO_SERVER_URL: "https://localhost:9000"
+      MINIO_BROWSER_REDIRECT_URL: "https://localhost:9001"
+      MINIO_KMS_KES_ENDPOINT: "https://kes:7373"
+      MINIO_KMS_KES_KEY_FILE: /root/.minio/certs/private.key
+      MINIO_KMS_KES_CERT_FILE: /root/.minio/certs/public.crt
+      MINIO_KMS_KES_KEY_NAME: my-minio-key
+    entrypoint: bin/sh -c 'cat /root/.minio/certs/public.crt >>/etc/pki/tls/certs/ca-bundle.crt && minio server /data --console-address ":9001"'
+    command: ''
+    networks:
+      - trino-network
+
+  kes:
+    image: 'minio/kes:latest'
+    hostname: kes
+    container_name: kes
+    environment:
+      KES_SERVER: "https://kes:7373"
+    ports:
+      - '7373:7373'
+    volumes:
+      - ./etc/kes:/etc/kes
+      - ./certs:/etc/kes/certs
+    entrypoint: bin/sh -c 'cat /etc/kes/certs/public.crt >>/etc/pki/tls/certs/ca-bundle.crt && /kes server --config /etc/kes/server-config.yaml'
+    command: ''
+    networks:
+      - trino-network
+
+volumes:
+  minio-data:
+    driver: local
+
+networks:
+  trino-network:
+    driver: bridge
